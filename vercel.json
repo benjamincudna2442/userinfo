@@ -11,11 +11,5 @@
       "src": "/(.*)",
       "dest": "app.py"
     }
-  ],
-  "env": {
-    "API_ID": "",
-    "API_HASH": "",
-    "BOT_TOKEN": "",
-    "PYTHONUNBUFFERED": "1"
-  }
+  ]
 }
