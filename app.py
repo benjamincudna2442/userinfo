@@ -19,12 +19,23 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize Pyrogram client
-bot = Client("info_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+# Initialize Pyrogram client with session file in /tmp
+session_path = os.path.join('/tmp', 'info_bot.session')
+bot = Client(
+    name="info_bot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN,
+    workdir="/tmp"  # Set working directory to /tmp
+)
 
 # Start Pyrogram client globally
 logger.info("Starting Pyrogram client")
-asyncio.run(bot.start())
+try:
+    asyncio.run(bot.start())
+except Exception as e:
+    logger.error(f"Failed to start Pyrogram client: {str(e)}")
+    raise
 
 # Ensure bot stops gracefully on shutdown
 import atexit
