@@ -1,5 +1,5 @@
-fastapi==0.115.2
-uvicorn==0.32.0
+flask==2.3.3
 pyrogram==2.0.106
-python-dateutil==2.9.0.post0
 tgcrypto==1.2.5
+python-dateutil==2.9.0.post0
+gunicorn==23.0.0
