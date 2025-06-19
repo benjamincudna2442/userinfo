@@ -1,5 +1,5 @@
 flask==2.3.3
-pyrogram==2.0.106
+pyrofork==2.3.66
 tgcrypto==1.2.5
 python-dateutil==2.9.0.post0
 gunicorn==23.0.0
