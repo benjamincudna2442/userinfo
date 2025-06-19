@@ -2,18 +2,17 @@
 # Copyright @ISmartDevs
 # Channel t.me/TheSmartDev
 
-from flask import Flask, request, jsonify
+from quart import Quart, request, jsonify
 from pyrogram import Client
 from pyrogram.errors import PeerIdInvalid, UsernameNotOccupied, ChannelInvalid
+from pyrogram.enums import ChatType
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 from config import API_ID, API_HASH, BOT_TOKEN
 import logging
 import os
-import asyncio
-import threading
 
-app = Flask(__name__)
+app = Quart(__name__)
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -83,16 +82,21 @@ def map_user_status(status):
         return "Last seen within month"
     return "Unknown"
 
-# Start Pyrogram client in a separate thread
-def start_bot():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(bot.start())
-    loop.run_forever()
+# Start Pyrogram client at app startup
+@app.before_serving
+async def start_bot():
+    logger.info("Starting Pyrogram client")
+    await bot.start()
+
+# Stop Pyrogram client at app shutdown
+@app.after_serving
+async def stop_bot():
+    logger.info("Stopping Pyrogram client")
+    await bot.stop()
 
 # Root endpoint with welcome message and usage tutorial
 @app.route('/')
-def welcome():
+async def welcome():
     return jsonify({
         "message": "Welcome to the SmartDevs Info API!",
         "usage": {
@@ -112,7 +116,7 @@ def welcome():
 
 # Info endpoint
 @app.route('/info')
-def get_info():
+async def get_info():
     username = request.args.get('username')
     if not username:
         return jsonify({"error": "Username parameter is required"}), 400
@@ -122,13 +126,11 @@ def get_info():
     logger.info(f"Fetching info for: {username}")
 
     try:
-        # Run Pyrogram client operation in async context
-        loop = asyncio.get_event_loop()
         DC_LOCATIONS = get_dc_locations()
 
         # Try fetching user or bot
         try:
-            user = loop.run_until_complete(bot.get_users(username))
+            user = await bot.get_users(username)
             logger.info(f"User/bot found: {username}")
             premium_status = "Yes" if user.is_premium else "No"
             dc_location = DC_LOCATIONS.get(user.dc_id, "Unknown")
@@ -155,16 +157,16 @@ def get_info():
             }
             return jsonify(response)
 
-        except (PeerIdInvalid, UsernameNotOccupied):
-            logger.info(f"Username '{username}' not found as user/bot. Checking for chat...")
+        except Exception as e:
+            logger.info(f"Username '{username}' not found as user/bot. Error: {str(e)}. Checking for chat...")
             try:
-                chat = loop.run_until_complete(bot.get_chat(username))
+                chat = await bot.get_chat(username)
                 dc_location = DC_LOCATIONS.get(chat.dc_id, "Unknown")
                 chat_type = {
-                    "supergroup": "Supergroup",
-                    "group": "Group",
-                    "channel": "Channel"
-                }.get(chat.type.name.lower(), "Unknown")
+                    ChatType.SUPERGROUP: "Supergroup",
+                    ChatType.GROUP: "Group",
+                    ChatType.CHANNEL: "Channel"
+                }.get(chat.type, "Unknown")
 
                 response = {
                     "type": chat_type.lower(),
@@ -176,28 +178,19 @@ def get_info():
                 }
                 return jsonify(response)
 
-            except (ChannelInvalid, PeerIdInvalid):
+            except (ChannelInvalid, PeerIdInvalid) as e:
                 error_message = "Looks Like I Don't Have Control Over The Channel" if chat_type == "Channel" else "Looks Like I Don't Have Control Over The Group"
-                logger.error(f"Permission error: {error_message}")
+                logger.error(f"Permission error: {error_message}. Error: {str(e)}")
                 return jsonify({"error": error_message}), 403
 
             except Exception as e:
                 logger.error(f"Error fetching chat info: {str(e)}")
                 return jsonify({"error": "Looks Like I Don't Have Control Over The Group"}), 403
 
-        except Exception as e:
-            logger.error(f"Error fetching user/bot info: {str(e)}")
-            return jsonify({"error": "Looks Like I Don't Have Control Over The User"}), 403
-
     except Exception as e:
         logger.error(f"Unhandled exception: {str(e)}")
         return jsonify({"error": "Internal Server Error"}), 500
 
 if __name__ == "__main__":
-    # Start Pyrogram client in a separate thread
-    bot_thread = threading.Thread(target=start_bot, daemon=True)
-    bot_thread.start()
-    
-    # Run Flask app
     port = int(os.environ.get("PORT", 8000))
     app.run(host="0.0.0.0", port=port)
