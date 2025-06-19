@@ -12,6 +12,8 @@ from config import API_ID, API_HASH, BOT_TOKEN
 import logging
 import os
 import asyncio
+import atexit
+import threading
 
 app = Flask(__name__)
 
@@ -29,17 +31,51 @@ bot = Client(
     workdir="/tmp"  # Set working directory to /tmp
 )
 
-# Start Pyrogram client globally
-logger.info("Starting Pyrogram client")
-try:
-    asyncio.run(bot.start())
-except Exception as e:
-    logger.error(f"Failed to start Pyrogram client: {str(e)}")
-    raise
+# Create an event loop for async operations
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
 
-# Ensure bot stops gracefully on shutdown
-import atexit
-atexit.register(lambda: asyncio.run(bot.stop()))
+# Function to start Pyrogram client
+async def start_bot():
+    logger.info("Starting Pyrogram client")
+    try:
+        await bot.start()
+        logger.info("Pyrogram client started successfully")
+    except Exception as e:
+        logger.error(f"Failed to start Pyrogram client: {str(e)}")
+        raise
+
+# Function to stop Pyrogram client
+async def stop_bot():
+    logger.info("Stopping Pyrogram client")
+    try:
+        await bot.stop()
+        logger.info("Pyrogram client stopped successfully")
+    except Exception as e:
+        logger.error(f"Failed to stop Pyrogram client: {str(e)}")
+
+# Run bot start in a thread-safe manner
+def run_start_bot():
+    future = asyncio.run_coroutine_threadsafe(start_bot(), loop)
+    future.result()  # Wait for completion
+
+# Run bot stop in a thread-safe manner
+def run_stop_bot():
+    future = asyncio.run_coroutine_threadsafe(stop_bot(), loop)
+    future.result()
+
+# Start a separate thread to run the event loop
+def start_loop(loop):
+    asyncio.set_event_loop(loop)
+    loop.run_forever()
+
+threading.Thread(target=start_loop, args=(loop,), daemon=True).start()
+
+# Start bot when application starts
+run_start_bot()
+
+# Register bot stop on application exit
+atexit.register(run_stop_bot)
 
 # DC locations function
 def get_dc_locations():
@@ -133,12 +169,29 @@ def get_info():
     username = username.strip('@').replace('https://', '').replace('http://', '').replace('t.me/', '').replace('/', '').replace(':', '')
     logger.info(f"Fetching info for: {username}")
 
+    async def fetch_user_info():
+        try:
+            user = await bot.get_users(username)
+            return {"user": user}
+        except Exception as e:
+            return {"error": e}
+
+    async def fetch_chat_info():
+        try:
+            chat = await bot.get_chat(username)
+            return {"chat": chat}
+        except Exception as e:
+            return {"error": e}
+
     try:
         DC_LOCATIONS = get_dc_locations()
 
         # Try fetching user or bot
-        try:
-            user = asyncio.run(bot.get_users(username))
+        future = asyncio.run_coroutine_threadsafe(fetch_user_info(), loop)
+        result = future.result()
+
+        if "user" in result:
+            user = result["user"]
             logger.info(f"User/bot found: {username}")
             premium_status = "Yes" if user.is_premium else "No"
             dc_location = DC_LOCATIONS.get(user.dc_id, "Unknown")
@@ -164,36 +217,39 @@ def get_info():
                 "account_age": account_age
             })
 
-        except Exception as e:
-            logger.info(f"Username '{username}' not found as user/bot. Error: {str(e)}. Checking for chat...")
-            try:
-                chat = asyncio.run(bot.get_chat(username))
-                dc_location = DC_LOCATIONS.get(chat.dc_id, "Unknown")
-                chat_type = {
-                    ChatType.SUPERGROUP: "Supergroup",
-                    ChatType.GROUP: "Group",
-                    ChatType.CHANNEL: "Channel"
-                }.get(chat.type, "Unknown")
+        logger.info(f"Username '{username}' not found as user/bot. Checking for chat...")
+        future = asyncio.run_coroutine_threadsafe(fetch_chat_info(), loop)
+        result = future.result()
 
-                return jsonify({
-                    "type": chat_type.lower(),
-                    "title": chat.title,
-                    "id": chat.id,
-                    "type_description": chat_type,
-                    "member_count": chat.members_count if chat.members_count else "Unknown",
-                    "data_center": f"{chat.dc_id} ({dc_location})"
-                })
+        if "chat" in result:
+            chat = result["chat"]
+            dc_location = DC_LOCATIONS.get(chat.dc_id, "Unknown")
+            chat_type = {
+                ChatType.SUPERGROUP: "Supergroup",
+                ChatType.GROUP: "Group",
+                ChatType.CHANNEL: "Channel"
+            }.get(chat.type, "Unknown")
 
-            except UsernameNotOccupied:
-                logger.error(f"Username '{username}' does not exist")
-                return jsonify({"error": f"Username '@{username}' does not exist"}), 404
-            except (ChannelInvalid, PeerIdInvalid) as e:
-                error_message = "Bot lacks permission to access this channel or group"
-                logger.error(f"Permission error for '{username}': {str(e)}")
-                return jsonify({"error": error_message}), 403
-            except Exception as e:
-                logger.error(f"Error fetching chat info for '{username}': {str(e)}")
-                return jsonify({"error": f"Failed to fetch info: {str(e)}"}), 500
+            return jsonify({
+                "type": chat_type.lower(),
+                "title": chat.title,
+                "id": chat.id,
+                "type_description": chat_type,
+                "member_count": chat.members_count if chat.members_count else "Unknown",
+                "data_center": f"{chat.dc_id} ({dc_location})"
+            })
+
+        error = result.get("error")
+        if isinstance(error, UsernameNotOccupied):
+            logger.error(f"Username '{username}' does not exist")
+            return jsonify({"error": f"Username '@{username}' does not exist"}), 404
+        elif isinstance(error, (ChannelInvalid, PeerIdInvalid)):
+            error_message = "Bot lacks permission to access this channel or group"
+            logger.error(f"Permission error for '{username}': {str(error)}")
+            return jsonify({"error": error_message}), 403
+        else:
+            logger.error(f"Error fetching info for '{username}': {str(error)}")
+            return jsonify({"error": f"Failed to fetch info: {str(error)}"}), 500
 
     except Exception as e:
         logger.error(f"Unhandled exception for '{username}': {str(e)}")
